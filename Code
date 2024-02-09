@@ -1,0 +1,183 @@
+##Currently I’m using DB browser for SQLite so some actions i‘m gonna do it from the program and not from the code
+## First i‘m going to create a database and import the tables. I will be working with the year 2023.
+
+##Clean the database: look for duplicates, nulls or inconsistency. Ride_id should be unique so look for duplicates:
+
+SELECT ride_id, COUNT(*)                                                                                                                                                                            
+FROM tripdata_2023
+GROUP BY ride_id                                                                                                                                                                                            
+ORDER BY ride_id DESC;
+
+##Checking for nulls
+SELECT COUNT(*) FILTER (WHERE rideable_type IS NULL) AS rideable_type_nulls,
+       COUNT(*) FILTER (WHERE started_at IS NULL) AS started_at_nulls,
+       COUNT(*) FILTER (WHERE ended_at IS NULL) AS ended_at_nulls,
+       COUNT(*) FILTER (WHERE start_station_name IS NULL) AS start_station_name_nulls,
+       COUNT(*) FILTER (WHERE start_station_id IS NULL) AS start_station_id_nulls,
+       COUNT(*) FILTER (WHERE end_station_name IS NULL) AS end_station_name_nulls,
+       COUNT(*) FILTER (WHERE end_station_id IS NULL) AS end_station_id_nulls,
+       COUNT(*) FILTER (WHERE start_lat IS NULL) AS start_lat_nulls,
+       COUNT(*) FILTER (WHERE start_lng IS NULL) AS start_lng_nulls,
+       COUNT(*) FILTER (WHERE end_lat IS NULL) AS end_lat_nulls,
+       COUNT(*) FILTER (WHERE end_lng IS NULL) AS end_lng_nulls,
+       COUNT(*) FILTER (WHERE member_casual IS NULL) AS member_casual_nulls
+FROM tripdata_2023;
+
+##Nulls are less of 16% in columns like start_station_name, start_station_id, end_station_name and end_station_id therefore i’ll keep the columns. I’ll exclude the outliners later on the visualization.
+
+
+##Now I’ll transform the database. I’ll remove: rideable_type since is not relevant  for the analysis. I will also drop start_station_id and end_station_id because  there are not consistent therefore it will not help me to identify the stations. 
+
+##I need to create a new column called “Ride_length”, so I split started_at and ended_at and got new columns only with hours.
+
+UPDATE tripdata_2023
+SET started_time = SUBSTR(started_at, 12, 8),
+		ended_time = SUBSTR(ended_at, 12,8);
+
+##And I‘ll keep the original columns only as date
+
+UPDATE tripdata_2023
+SET started_at = SUBSTR(started_at, 1, 10),
+		ended_at = SUBSTR(ended_at, 1,10); 
+
+
+##Now I can easily calculate the ride length 
+UPDATE tripdata_2023
+SET ride_length = strftime('%H:%M:%S', (strftime('%s', ended_time) - strftime('%s', started_time)), 'unixepoch');
+
+##I also needed a new column with the day of the week from 0 to 7
+
+UPDATE tripdata_2023
+SET day_of_the_week = strftime('%w', started_at );
+
+##I will cast it so it’s easier to understand and to visualize
+
+UPDATE tripdata_2023
+SET day = 
+    CASE day_of_the_week
+        WHEN 0 THEN 'Sunday'
+        WHEN 1 THEN 'Monday'
+        WHEN 2 THEN 'Tuesday'
+        WHEN 3 THEN 'Wednesday'
+        WHEN 4 THEN 'Thursday'
+        WHEN 5 THEN 'Friday'
+        ELSE 'Saturday'
+    END;
+
+##The last column I need to create is ride_distance 
+
+UPDATE tripdata_2023
+Set ride_distance = round (6371 * 2 * ASIN(SQRT(
+SIN(RADIANS(end_lat - start_lat) / 2) * SIN(RADIANS(end_lat - start_lat) / 2) +
+COS(RADIANS(start_lat)) * COS(RADIANS(end_lat)) * SIN(RADIANS(end_lng - start_lng) / 2) * SIN(RADIANS(end_lng - start_lng) / 2)
+)) ,2);
+
+##So there were a few outliners, I had to removed them to not bias the database
+
+DELETE from tripdata_2023
+where started_time > ended_time AND started_date = ended_date;
+
+DELETE from tripdata_2023
+where end_lat=  ‘0.’0;
+
+##For some reason there were trips than last less than 1 minute and the bike never left the started_station 
+
+DELETE from tripdata_2023
+where ride_length < "00:01:00"
+
+##Now let’s get some insights, I will base my analysis on the comparative between members and casuals riders.
+To begin with I want to know how many members and how many casuals riders we have
+
+SELECT count(ride_id), member_casual
+from tripdata_2023
+GROUP by member_casual;
+
+##Let’s see how they use Cyclistic so then we can plan how to transform casuals riders into members
+
+SELECT count(ride_id), member_casual, day
+from tripdata_2023
+GROUP by member_casual,day;
+
+##The first difference is that members use cyclistic during the week, specially Wednesday and Thursday instead of casual members who use it on the weekends. 
+
+SELECT avg(ride_distance_km), member_casual
+from tripdata_2023
+group by member_casual;
+
+
+SELECT round(sum(ride_distance_km),2), member_casual
+from tripdata_2023
+group by member_casual;
+
+
+
+Promedio de tiempo de viaje
+
+SELECT strftime('%M:%S',avg(ride_length)) as average_ride_length, member_casual
+FROM tripdata_2023
+GROUP by member_casual;
+
+25:43	casual
+21:57	member
+
+
+Popular stations
+
+SELECT member_casual, start_station_name, count(*) as popular_stations
+FROM tripdata_2023
+where start_station_name is NOT NULL 
+and member_casual = 'member'
+GROUP BY start_station_name, member_casual
+ORDER BY popular_stations DESC
+LIMIT 3;
+
+member	Kingsbury St & Kinzie St	25620
+member	Clinton St & Washington Blvd	25594
+member	Clark St & Elm St	24497
+
+SELECT member_casual, start_station_name, COUNT(*) as popular_stations
+FROM tripdata_2023
+where start_station_name is NOT NULL 
+and member_casual = ‘casual’
+GROUP BY start_station_name, member_casual
+ORDER BY popular_stations DESC
+LIMIT 3;
+
+casual	Streeter Dr & Grand Ave	45140
+casual	DuSable Lake Shore Dr & Monroe St	29929
+casual	Michigan Ave & Oak St	22225
+
+I also would like to know some date context
+
+SELECT count(ride_id),member_casual
+from tripdata_2023
+WHERE started_date BETWEEN '2023-06-21' and '2023-09-22'
+GROUP by member_casual;
+
+911455	casual
+1299412	member
+
+SELECT count(ride_id),member_casual
+from tripdata_2023
+WHERE  (started_date BETWEEN '2023-01-01' and '2023-03-20')  or  ( started_date BETWEEN '2023-12-21' and '2023-12-31')
+GROUP by member_casual;
+
+130286	casual
+439591	member
+ 
+SELECT count(ride_id),member_casual
+from tripdata_2023
+WHERE  started_time BETWEEN '07:00:00' and '13:00:00'
+GROUP by member_casual;
+
+509215	casual
+1100584	member
+
+SELECT count(ride_id),member_casual
+from tripdata_2023
+WHERE  started_time BETWEEN '14:00:00' and '18:00:00'  
+GROUP by member_casual;
+
+
+
+
